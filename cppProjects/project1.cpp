@@ -1,5 +1,10 @@
 /* UTF-8 */
 /* This cpp file is used for practice.*/
+/* This code will:
+1. Read Geometry and calculate all distances, bond angles, plane angles and torsional angles.
+2. Calculate center of mass and then normalize coordinates.
+3. Calculate inertia_tensor matrix, diagonlizing to obtain principle moment and then find symmetry and rotational constant.
+*/
 
 #include <vector>
 #include <fstream>

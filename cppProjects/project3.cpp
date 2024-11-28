@@ -5,7 +5,7 @@
 2. Orthogonalization of the Basis Set
 3. Create inital guess density matrix
 4. Perform SCF calculations (support Direct Inversion in the Iterative Subspace（DIIS） method) and obtain single point energy
-
+5. this code also serves as an answer to project 8.
 */
 #include <vector>
 #include <fstream>

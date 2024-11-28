@@ -1,19 +1,12 @@
 /* UTF-8 */
 /* This cpp file is used for practice.*/
-
-/* This code use direct SCF, so it will be difficult to reach convergence limit
-For better code implementation, you can check project3_DIIS.cpp, which supports DIIS algorithm and accelerates convergence
-
-*/
-
 /* This code will:
 1. Read and process all electronic integrals calculated by other programs.
 2. Orthogonalization of the Basis Set
 3. Create inital guess density matrix
-4. Perform SCF calculations and obtain single point energy
+4. Perform SCF calculations (support Direct Inversion in the Iterative Subspace（DIIS） method) and obtain single point energy
 
 */
-
 #include <vector>
 #include <fstream>
 #include <iostream>
@@ -34,8 +27,49 @@ For better code implementation, you can check project3_DIIS.cpp, which supports 
 #define _C 2.99792458e8 // light speed
 #define HARTREE_TO_J 4.36e-18
 #define _judgeBond 1.4 // use to judge whether two atoms can form a bond.
+#define DIIS_MAX 8
 using namespace std;
 
+void print_matrix(Eigen::MatrixXd target, const char *name = NULL)
+{
+    if (name != NULL)
+    {
+        cout << name;
+        cout << endl;
+    }
+    for (int i = 0; i < target.rows(); i++)
+    {
+        for (int j = 0; j < target.cols(); j++)
+            cout << format("{:>14.6f}", target(i, j));
+        cout << endl;
+    }
+    cout << endl;
+    return;
+}
+void print_matrix(Eigen::MatrixXd target, ofstream &fout, const char *name = NULL)
+{
+    fout << endl;
+    if (name != NULL)
+    {
+        fout << name;
+        fout << endl;
+    }
+    for (int i = 0; i < target.rows(); i++)
+    {
+        for (int j = 0; j < target.cols(); j++)
+            fout << format("{:>14.6f}", target(i, j));
+        fout << endl;
+    }
+    fout << endl;
+    return;
+}
+void set_zeros(Eigen::MatrixXd &target)
+{
+    for (int i = 0; i < target.rows(); i++)
+        for (int j = 0; j < target.cols(); j++)
+            target(i, j) = 0;
+    return;
+}
 const vector<string> ATOMS = {"H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P", "S", "Cl"};
 const double Atom_mass[] = {1.008, 4.003, 6.94, 9.01, 10.81, 12.01, 14.01, 15.99, 19.00};          // in amu
 const double Radius[] = {0.586, 0.529, 2.419, 1.814, 1.587, 1.436, 1.341, 1.247, 1.209, 2.0, 2.0}; // covalent radius in Bohr
@@ -48,9 +82,9 @@ vector<double> cross(vector<double> &v1, vector<double> &v2)                    
     ans[2] = v1[0] * v2[1] - v1[1] * v2[0];
     return ans;
 }
-Eigen::MatrixXf sort_columns(Eigen::MatrixXf init_matrix, vector<int> &eigen_order)
+Eigen::MatrixXd sort_columns(Eigen::MatrixXd init_matrix, vector<int> &eigen_order)
 {
-    Eigen::MatrixXf sorted = init_matrix;
+    Eigen::MatrixXd sorted = init_matrix;
     assert(eigen_order.size() == init_matrix.cols());
     for (int col = 0; col < init_matrix.cols(); col++)
     {
@@ -97,7 +131,6 @@ public:
         delete atom_list;
         delete Forces;
     }
-
     void build_Coords(const char *filename)
     {
         ifstream fin;
@@ -226,13 +259,13 @@ public:
     {
         return orbital_num;
     }
-    Eigen::MatrixXf read_1eint(const char *Workdir, const char *Basis) // return H_core = T + V
+    Eigen::MatrixXd read_1eint(const char *Workdir, const char *Basis) // return H_core = T + V
     {
         string workdir = Workdir;
         string basis = Basis;
         assert(orbital_num >= 1);
-        Eigen::MatrixXf H_core(orbital_num, orbital_num);
-
+        Eigen::MatrixXd H_core(orbital_num, orbital_num);
+        set_zeros(H_core);
         ifstream T, V;
         string T_file = workdir + basis + "/t.dat";
         string V_file = workdir + basis + "/v.dat";
@@ -274,13 +307,14 @@ public:
         }
         return H_core;
     }
-    Eigen::MatrixXf read_overlap_int(const char *Workdir, const char *Basis)
+    Eigen::MatrixXd read_overlap_int(const char *Workdir, const char *Basis)
     {
         string workdir = Workdir;
         string basis = Basis;
         assert(orbital_num >= 1);
         string S_file = workdir + basis + "/s.dat";
-        Eigen::MatrixXf S(orbital_num, orbital_num);
+        Eigen::MatrixXd S(orbital_num, orbital_num);
+        set_zeros(S);
         ifstream fin;
         fin.open(S_file.c_str(), ios::in);
         if (!fin.is_open())
@@ -321,46 +355,39 @@ public:
             double inte;
             sscanf(buf, "%d%d%d%d%lf", &miu, &v, &lambda, &sigma, &inte);
             rep[index_map(index_map(miu, v), index_map(lambda, sigma))] = inte;
-            /*
-            rep[index_map(index_map(v, miu), index_map(lambda, sigma))] = inte;
-            rep[index_map(index_map(miu, v), index_map(sigma, lambda))] = inte;
-            rep[index_map(index_map(v, miu), index_map(sigma, lambda))] = inte;
-            rep[index_map(index_map(lambda, sigma), index_map(miu, v))] = inte;
-            rep[index_map(index_map(lambda, sigma), index_map(v, miu))] = inte;
-            rep[index_map(index_map(sigma, lambda), index_map(miu, v))] = inte;
-            rep[index_map(index_map(sigma, lambda), index_map(v, miu))] = inte;
-            */
         }
         fin.close();
         return rep;
     }
-    Eigen::MatrixXf ortho_overlap(Eigen::MatrixXf &init_S) // return S^-0.5; Lowdin Diag
+    Eigen::MatrixXd ortho_overlap(Eigen::MatrixXd &init_S) // return S^-0.5; Lowdin Diag
     {
-        Eigen::MatrixXf ortho_S(orbital_num, orbital_num);
-        Eigen::EigenSolver<Eigen::MatrixXf> es(init_S);
-        Eigen::MatrixXf eigenvectors(orbital_num, orbital_num), eigenvalues(orbital_num, orbital_num);
-        eigenvectors = es.eigenvectors().real();
+        Eigen::MatrixXd ortho_S(orbital_num, orbital_num);
+        Eigen::EigenSolver<Eigen::MatrixXd> es(init_S);
+        Eigen::MatrixXd eigenvalues(orbital_num, orbital_num);
+        set_zeros(eigenvalues);
+        // eigenvectors = es.eigenvectors().real();
         for (int i = 0; i < orbital_num; i++)
         {
             for (int j = 0; j < orbital_num; j++)
             {
                 if (i == j)
                 {
-                    assert(real(es.eigenvalues()[i]) > 0);
-                    eigenvalues(i, j) = 1 / sqrt(real(es.eigenvalues()[i]));
+                    assert(es.eigenvalues()[i].real() > 0);
+                    eigenvalues(i, j) = 1 / sqrt(es.eigenvalues()[i].real());
                 }
                 else
                     eigenvalues(i, j) = 0;
             }
         }
-        ortho_S = eigenvectors * eigenvalues * eigenvectors.transpose();
+        ortho_S = es.eigenvectors().real() * eigenvalues * es.eigenvectors().real().transpose();
         return ortho_S;
     }
-    Eigen::MatrixXf initial_guess_D(Eigen::MatrixXf &S_sym, Eigen::MatrixXf &H_core, bool is_RHF = true) // return inital Density Matrix
+    Eigen::MatrixXd initial_guess_D(Eigen::MatrixXd &S_sym, Eigen::MatrixXd &H_core, bool is_RHF = true) // return inital Density Matrix
     {
-        Eigen::MatrixXf F_init(orbital_num, orbital_num), C_init(orbital_num, orbital_num), D_init(orbital_num, orbital_num);
+        Eigen::MatrixXd F_init(orbital_num, orbital_num), C_init(orbital_num, orbital_num), D_init(orbital_num, orbital_num);
+        set_zeros(D_init);
         F_init = S_sym.transpose() * H_core * S_sym;
-        Eigen::EigenSolver<Eigen::MatrixXf> es(F_init);
+        Eigen::EigenSolver<Eigen::MatrixXd> es(F_init);
         vector<int> order(orbital_num, 0);
         for (int i = 0; i < orbital_num; i++)
         {
@@ -374,7 +401,7 @@ public:
             }
             order[i] = count;
         }
-        Eigen::MatrixXf sorted_eigenvector = sort_columns(es.eigenvectors().real(), order);
+        Eigen::MatrixXd sorted_eigenvector = sort_columns(es.eigenvectors().real(), order);
         // sort eigenvectors based on the order of eigenvalue
 
         C_init = S_sym * sorted_eigenvector; // C_init = C_0, the coffeciant matrix
@@ -391,7 +418,6 @@ public:
         {
             for (int v = 0; v < orbital_num; v++)
             {
-                D_init(miu, v) = 0;
                 for (int i = 0; i < occupied_orbital; i++)
                     D_init(miu, v) += C_init(miu, i) * C_init(v, i);
             }
@@ -416,9 +442,9 @@ public:
         */
         return D_init;
     }
-    Eigen::MatrixXf build_Fock_matrix(Eigen::MatrixXf &H_core, Eigen::MatrixXf &D, vector<double> &rep)
+    Eigen::MatrixXd build_Fock_matrix(Eigen::MatrixXd &H_core, Eigen::MatrixXd &D, vector<double> &rep)
     {
-        Eigen::MatrixXf Fock = H_core;
+        Eigen::MatrixXd Fock = H_core;
         for (int miu = 1; miu <= orbital_num; miu++)
         {
             for (int v = 1; v <= orbital_num; v++)
@@ -436,12 +462,55 @@ public:
         }
         return Fock;
     }
-    Eigen::MatrixXf build_Density_matrix(Eigen::MatrixXf &Fock, Eigen::MatrixXf &S_sym, bool is_RHF = true)
+    Eigen::MatrixXd build_DIIS_Fock(Eigen::MatrixXd &Fock, vector<Eigen::MatrixXd> &error_list, vector<Eigen::MatrixXd> &pre_list, double DET_B_MIN = 1e-12)
     {
-        Eigen::MatrixXf Density(orbital_num, orbital_num);
-        Eigen::MatrixXf F_sym = S_sym.transpose() * Fock * S_sym;
-        Eigen::EigenSolver<Eigen::MatrixXf> es(F_sym);
-        Eigen::MatrixXf eigenvectors(orbital_num, orbital_num);
+        assert(error_list.size() == pre_list.size());
+        if (error_list.size() <= 1)
+            return Fock;
+        if (error_list.size() > DIIS_MAX)
+        {
+            cout << "Size of Error_list exceeds!\n";
+            return Fock;
+        }
+        int size = error_list.size();
+        assert(size <= DIIS_MAX);
+        Eigen::MatrixXd B(size + 1, size + 1);
+        Eigen::VectorXd Coef(size + 1), b(size + 1); // B*coef = b --> coef = B^-1 * b
+        set_zeros(B);
+        for (int i = 0; i <= size; i++)
+        {
+            B(size, i) = -1;
+            B(i, size) = -1;
+            b[i] = 0;
+        }
+        B(size, size) = 0;
+        b[size] = -1;
+        // build Matrix B
+        for (int i = 0; i < size; i++)
+        {
+            for (int j = 0; j < size; j++)
+            {
+                if (i <= j)
+                    // B(i, j) = error_list[i].cwiseProduct(error_list[j]).sum(); // ??
+                    B(i, j) = (error_list[i] * error_list[j].transpose()).trace();
+                if (i > j)
+                    B(i, j) = B(j, i);
+            }
+        }
+        if (fabs(B.determinant()) - DET_B_MIN < 0)
+            return Fock; // B near singular --> direct SCF
+        Coef = B.colPivHouseholderQr().solve(b);
+        // use coef to evaluate DIIS_Fock matrix
+        Eigen::MatrixXd DIIS_Fock(orbital_num, orbital_num);
+        set_zeros(DIIS_Fock);
+        for (int i = 0; i < size; i++)
+            DIIS_Fock += Coef[i] * pre_list[i];
+        return DIIS_Fock;
+    }
+    Eigen::MatrixXd build_Coef_matrix(Eigen::MatrixXd &Fock, Eigen::MatrixXd &S_sym)
+    {
+        Eigen::MatrixXd F_sym = S_sym.transpose() * Fock * S_sym;
+        Eigen::EigenSolver<Eigen::MatrixXd> es(F_sym);
         vector<int> order(orbital_num, 0);
         for (int i = 0; i < orbital_num; i++)
         {
@@ -455,8 +524,13 @@ public:
             }
             order[i] = count;
         }
-        Eigen::MatrixXf sorted_eigenvector = sort_columns(es.eigenvectors().real(), order);
-        Eigen::MatrixXf Coef_matrix = S_sym * sorted_eigenvector;
+        Eigen::MatrixXd sorted_eigenvector = sort_columns(es.eigenvectors().real(), order);
+        return S_sym * sorted_eigenvector;
+    }
+    Eigen::MatrixXd build_Density_matrix(Eigen::MatrixXd &Coef, bool is_RHF = true)
+    {
+        Eigen::MatrixXd Density(orbital_num, orbital_num);
+        set_zeros(Density);
         int occupied_orbital = 0;
         if (is_RHF == true)
             occupied_orbital = electron / 2;
@@ -465,14 +539,13 @@ public:
         {
             for (int v = 0; v < orbital_num; v++)
             {
-                Density(miu, v) = 0;
                 for (int m = 0; m < occupied_orbital; m++)
-                    Density(miu, v) += Coef_matrix(miu, m) * Coef_matrix(v, m);
+                    Density(miu, v) += Coef(miu, m) * Coef(v, m);
             }
         }
         return Density;
     }
-    double cal_SCF_Energy(Eigen::MatrixXf &Density, Eigen::MatrixXf &H_core, Eigen::MatrixXf &Fock) // return value will include V_NN
+    double cal_SCF_Energy(Eigen::MatrixXd &Density, Eigen::MatrixXd &H_core, Eigen::MatrixXd &Fock) // return value will include V_NN
     {
         double E_SCF = 0;
         for (int miu = 0; miu < orbital_num; miu++)
@@ -483,7 +556,7 @@ public:
         E_elec = E_SCF;
         return E_SCF + V_NN;
     }
-    double cal_RMSD(Eigen::MatrixXf &D_1, Eigen::MatrixXf &D_2)
+    double cal_RMSD(Eigen::MatrixXd &D_1, Eigen::MatrixXd &D_2)
     {
         double rmsd = 0;
         for (int i = 0; i < orbital_num; i++)
@@ -491,39 +564,19 @@ public:
                 rmsd += pow((D_1(i, j) - D_2(i, j)), 2);
         return sqrt(rmsd);
     }
-    Eigen::MatrixXf get_Coef_matrix(Eigen::MatrixXf &Fock, Eigen::MatrixXf &S_sym)
-    {
-        Eigen::MatrixXf F_sym = S_sym.transpose() * Fock * S_sym;
-        Eigen::EigenSolver<Eigen::MatrixXf> es(F_sym);
-        Eigen::MatrixXf eigenvectors(orbital_num, orbital_num);
-        vector<int> order(orbital_num, 0);
-        for (int i = 0; i < orbital_num; i++)
-        {
-            int count = 0;
-            for (int j = 0; j < orbital_num; j++)
-            {
-                if (i == j)
-                    continue;
-                if (es.eigenvalues()[i].real() - es.eigenvalues()[j].real() > 0)
-                    count++;
-            }
-            order[i] = count;
-        }
-        Eigen::MatrixXf sorted_eigenvector = sort_columns(es.eigenvectors().real(), order);
-        return S_sym * sorted_eigenvector;
-    }
 };
 
-int main(int argc, char *argv[]) // command: ./project3 {-molecule} {-basis set} -{SCF}; default parameter is: h2o STO-3G tight
+int main(int argc, char *argv[]) // command: ./project3 {-molecule} {-basis set} -{SCF}; default parameter is: h2o STO-3G tight (diis)
 {
     // file processing;
     string Workdir = "F:/cpp/ProgrammingProjects-master/Project#03/input/h2o/";
     string output = "F:/cpp/ProgrammingProjects-master/Project#03/input/h2o.log";
     string basis = "STO-3G";
-    string inter = "h2o";
-    double E_limit = 1e-6, RMSD_limit = 1e-6;
-    int SCF_LIMIT = 100; // max iter num for normal limit
-    for (int i = 0; i < argc; i++)
+    string inter = "ch4";
+    double E_limit = 1e-8, RMSD_limit = 1e-8;
+    int SCF_LIMIT = 80; // max iter num for normal limit
+    bool close_DIIS = true;
+    for (int i = 0; i < argc; i++) // read parameters
     {
         if (argc <= 1) // default arg.
             break;
@@ -540,25 +593,34 @@ int main(int argc, char *argv[]) // command: ./project3 {-molecule} {-basis set}
         }
         if (i == 3)
         {
-            cout << argv[3] << endl;
-            if (argv[3] == "tight")
+            string standard = argv[3];
+            if (standard == "tight")
             {
-                E_limit = 1e-12;
-                RMSD_limit = 1e-12;
-                SCF_LIMIT = 200;
+                E_limit = 1e-10;
+                RMSD_limit = 1e-10;
+                SCF_LIMIT = 100;
                 cout << "Converge limit of SCF is set to tight." << endl;
             }
-            if (argv[3] == "normal")
+            if (standard == "normal")
             {
                 cout << "Converge limit of SCF is set to normal." << endl;
                 continue;
             }
-            if (argv[3] == "loose")
+            if (standard == "loose")
             {
                 cout << "Converge limit of SCF is set to loose." << endl;
-                E_limit = 1e-3;
-                RMSD_limit = 1e-3;
-                SCF_LIMIT = 60;
+                E_limit = 1e-7;
+                RMSD_limit = 1e-7;
+                SCF_LIMIT = 50;
+            }
+        }
+        if (i == 4)
+        {
+            string is_diis = argv[4];
+            if (is_diis == "diis" || is_diis == "DIIS")
+            {
+                close_DIIS = false;
+                cout << "Turn ON DIIS Algorithm to accelerate SCF Procedure.\n";
             }
         }
     }
@@ -580,51 +642,37 @@ int main(int argc, char *argv[]) // command: ./project3 {-molecule} {-basis set}
 
     // read integral
     mol.read_VNN((Workdir + basis + "/enuc.dat").c_str());
-    Eigen::MatrixXf H_core = mol.read_1eint(Workdir.c_str(), basis.c_str());
-    Eigen::MatrixXf S = mol.read_overlap_int(Workdir.c_str(), basis.c_str());
+    Eigen::MatrixXd H_core = mol.read_1eint(Workdir.c_str(), basis.c_str());
+    Eigen::MatrixXd S = mol.read_overlap_int(Workdir.c_str(), basis.c_str());
     vector<double> rep = mol.read_rep_int(Workdir.c_str(), basis.c_str());
 
     // preparation
-    Eigen::MatrixXf S_sym = mol.ortho_overlap(S);
-    Eigen::MatrixXf D_init = mol.initial_guess_D(S_sym, H_core);
+    Eigen::MatrixXd S_sym = mol.ortho_overlap(S);
+    Eigen::MatrixXd D_init = mol.initial_guess_D(S_sym, H_core);
     double pre_Ele = mol.get_Ele();
 
-    fout << "The first Density Matrix" << endl;
-    for (int i = 0; i < mol.get_orbital_num(); i++)
-    {
-        for (int j = 0; j < mol.get_orbital_num(); j++)
-        {
-            fout << format("{:>14.8f}", D_init(i, j)) << "  ";
-        }
-        fout << endl;
-    }
-    fout << endl;
     // SCF Procedure
     double rmsd = 1, delta_E = 1, E_tot = 0; // E_tot = E_ele + V_NN
-    int iter = 1;
-    Eigen::MatrixXf Fock = mol.build_Fock_matrix(H_core, D_init, rep);
-    fout << "The first Fock Matrix" << endl;
-    for (int i = 0; i < mol.get_orbital_num(); i++)
-    {
-        for (int j = 0; j < mol.get_orbital_num(); j++)
-        {
-            fout << format("{:>14.8f}", Fock(i, j)) << "  ";
-        }
-        fout << endl;
-    }
-
+    int iter = 0;
+    vector<Eigen::MatrixXd> pre_list, error_list; // pre_list size <= 5
+    Eigen::MatrixXd Fock = mol.build_Fock_matrix(H_core, D_init, rep);
+    Eigen::MatrixXd C = mol.build_Coef_matrix(Fock, S_sym);
+    Eigen::MatrixXd D = mol.build_Density_matrix(C);
+    Eigen::MatrixXd pre_D = D_init;
+    Eigen::MatrixXd pre_F = Fock;
     fout << endl;
     fout << format("{:^4s}{:^18s}{:^18s}{:^18s}", "Iter", "Total Energy", "Delta_E", "RMS(D)") << endl;
     fout << format("{:>4d}{:>18.12f}", 0, mol.get_Ele() + mol.get_VNN()) << endl;
 
-    Eigen::MatrixXf D = mol.build_Density_matrix(Fock, S_sym);
-    Eigen::MatrixXf pre_D = D_init;
     E_tot = mol.cal_SCF_Energy(D, H_core, Fock);
     delta_E = mol.get_Ele() - pre_Ele;
     rmsd = mol.cal_RMSD(D, pre_D);
+    iter++;
     fout << format("{:>4d}{:>18.12f}{:>18.12f}{:>18.12f}", iter, mol.get_Ele() + mol.get_VNN(), delta_E, rmsd) << endl;
     bool SCF_sign = true;
-    while (rmsd > RMSD_limit || fabs(delta_E) > E_limit) // update Fock and Density matrix.
+    bool start_DIIS = false;
+
+    while (rmsd - RMSD_limit > 0 || fabs(delta_E) - E_limit > 0) // update Fock and Density matrix.
     {
         iter++;
         if (iter > SCF_LIMIT)
@@ -635,21 +683,43 @@ int main(int argc, char *argv[]) // command: ./project3 {-molecule} {-basis set}
         }
         pre_Ele = mol.get_Ele();
         pre_D = D;
-        Eigen::MatrixXf pre_Fock = Fock;
-        if (iter > 10 && iter <= 20) // open dumping method
-            Fock = 0.8 * pre_Fock + 0.2 * mol.build_Fock_matrix(H_core, D, rep);
-        else if (iter > 20)
-            Fock = 0.99 * pre_Fock + 0.01 * mol.build_Fock_matrix(H_core, D, rep);
-        else
-            Fock = mol.build_Fock_matrix(H_core, D, rep);
+        if (iter > 2 && close_DIIS == false) // DIIS Acc. Process
+        {
+            Eigen::MatrixXd Error = Fock * D * S - S * D * Fock; // Calculate ERROR matrix Err_(n-1)=F_(n)D_(n-1)S-SD_(n-1)F_(n);
+            double max_error = -1;
+            if (start_DIIS == false)
+            {
+                for (int i = 0; i < mol.get_orbital_num(); i++)
+                {
+                    for (int j = 0; j < mol.get_orbital_num(); j++)
+                        if (Error(i, j) > max_error)
+                            max_error = Error(i, j);
+                }
+            }
+            if ((max_error < 1.0 || iter >= DIIS_MAX) && start_DIIS == false)
+            {
+                cout << "Turn on DIIS on iteration " << iter << endl;
+                start_DIIS = true;
+            }
 
-        D = mol.build_Density_matrix(Fock, S_sym);
-        E_tot = mol.cal_SCF_Energy(D, H_core, Fock);
-        delta_E = mol.get_Ele() - pre_Ele;
-        rmsd = mol.cal_RMSD(D, pre_D);
-
+            error_list.push_back(Error);
+            pre_list.push_back(Fock);
+            if (error_list.size() > DIIS_MAX)
+                error_list.erase(error_list.begin());
+            if (pre_list.size() > DIIS_MAX)
+                pre_list.erase(pre_list.begin());
+            if (start_DIIS == true)
+                Fock = mol.build_DIIS_Fock(Fock, error_list, pre_list); // extrapolated Fock with DIIS method (F_n*)
+        }
+        C = mol.build_Coef_matrix(Fock, S_sym);       // update C by extrapolated Fock (C_n)
+        D = mol.build_Density_matrix(C);              // update density   (D_n)
+        Fock = mol.build_Fock_matrix(H_core, D, rep); // update real Fock (F_n+1)
+        E_tot = mol.cal_SCF_Energy(D, H_core, Fock);  // update energy
+        delta_E = mol.get_Ele() - pre_Ele;            // calculate E_diff
+        rmsd = mol.cal_RMSD(D, pre_D);                // calculate RMS(D)
         fout << format("{:>4d}{:>18.12f}{:>18.12f}{:>18.12f}", iter, E_tot, delta_E, rmsd) << endl;
     }
+    print_matrix(Fock, fout, "Final Fock Matrix");
     if (SCF_sign == true)
     {
         cout << "\nSuccessfully complete." << endl;

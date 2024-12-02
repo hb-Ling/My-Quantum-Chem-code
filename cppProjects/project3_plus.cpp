@@ -385,7 +385,6 @@ public:
     }
     Eigen::MatrixXd ortho_overlap(Eigen::MatrixXd &S) // return S^-0.5; Lowdin Diag
     {
-        print_matrix(S, "Overlap");
         Eigen::MatrixXd ortho_S(N_AO, N_AO);
         Eigen::MatrixXd eigenvalues(N_AO, N_AO);
         set_zeros(ortho_S);
@@ -406,9 +405,6 @@ public:
             }
         }
         ortho_S = (es.eigenvectors().real()) * eigenvalues * (es.eigenvectors().real().transpose());
-        print_matrix(eigenvalues, "S_eigenvalues");
-        print_matrix(es.eigenvectors().real(), "S_eigenvectors");
-        print_matrix(ortho_S, "ortho_s");
         return ortho_S;
     }
     Eigen::MatrixXd initial_guess_D(Eigen::MatrixXd &S_sym, Eigen::MatrixXd &H_core, bool is_RHF = true) // return inital Density Matrix
